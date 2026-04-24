@@ -1,18 +1,19 @@
 import { supabase } from "../supabase/client";
 import { logger, persistLog } from "../utils/logger";
-import { getSocket } from "../whatsapp/baileys-client";
+import { sendText } from "../whatsapp/meta-api-client";
 import { appendMessage } from "../services/conversations";
 
 // Ao subir o bot, identifica conversas com mensagem do cliente recebida enquanto estava offline
 // (last_inbound_at > last_bot_reply_at) e dispara mensagem de retomada uma única vez.
 export async function runOfflineRecovery() {
-  // Espera 5s para garantir que a conexão WhatsApp está pronta
+  // Espera 5s para garantir inicialização
   setTimeout(execute, 5000);
 }
 
 async function execute() {
   try {
-    const { data: cfg } = await supabase.from("bot_config").select("recovery_message").eq("id", 1).single();
+    const { data: cfg } = await supabase.from("bot_config").select("recovery_message, meta_phone_number_id, is_active").eq("id", 1).single();
+    if (!cfg?.is_active || !cfg?.meta_phone_number_id) return;
     const recovery = cfg?.recovery_message || "Olá! Desculpa, estávamos offline. Como posso ajudar?";
 
     const { data, error } = await supabase
@@ -35,10 +36,9 @@ async function execute() {
 
       const phone = c.customers?.phone;
       if (!phone) continue;
-      const jid = `${phone}@s.whatsapp.net`;
 
       try {
-        await getSocket().sendMessage(jid, { text: recovery });
+        await sendText(cfg.meta_phone_number_id, phone, recovery);
         await appendMessage({
           conversation_id: c.id, direction: "outbound", author: "bot", text: recovery
         });

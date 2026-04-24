@@ -1,11 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { supabase } from "@/lib/supabase";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "@/hooks/use-toast";
-import { Plus, Pencil, Trash2, Loader2 } from "lucide-react";
+import { Plus, Pencil, Trash2, Loader2, Upload } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -14,12 +14,14 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import type { Category } from "@/types/db";
+import Papa from "papaparse";
 
 export default function Categories() {
   const [categories, setCategories] = useState<Category[]>([]);
   const [loading, setLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   
   // Estado do formulário
   const [formData, setFormData] = useState<{ id?: string; name: string; description: string }>({
@@ -55,6 +57,15 @@ export default function Categories() {
     setIsDialogOpen(true);
   }
 
+  function generateSlug(name: string) {
+    return name.toString().toLowerCase()
+      .replace(/\s+/g, '-')
+      .replace(/[^\w\-]+/g, '')
+      .replace(/\-\-+/g, '-')
+      .replace(/^-+/, '')
+      .replace(/-+$/, '');
+  }
+
   async function saveCategory() {
     if (!formData.name.trim()) {
       toast({ title: "Atenção", description: "O nome da categoria é obrigatório.", variant: "destructive" });
@@ -62,11 +73,13 @@ export default function Categories() {
     }
 
     setSaving(true);
+    const slug = generateSlug(formData.name);
+
     if (formData.id) {
       // Atualizar
       const { error } = await supabase
         .from("categories")
-        .update({ name: formData.name, description: formData.description })
+        .update({ name: formData.name, description: formData.description, slug })
         .eq("id", formData.id);
         
       if (error) toast({ title: "Erro ao atualizar", description: error.message, variant: "destructive" });
@@ -79,7 +92,7 @@ export default function Categories() {
       // Criar nova
       const { error } = await supabase
         .from("categories")
-        .insert([{ name: formData.name, description: formData.description }]);
+        .insert([{ name: formData.name, description: formData.description, slug }]);
         
       if (error) toast({ title: "Erro ao criar", description: error.message, variant: "destructive" });
       else {
@@ -108,6 +121,54 @@ export default function Categories() {
     }
   }
 
+  const handleFileUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    setLoading(true);
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: async (results) => {
+        try {
+          const rows = results.data as any[];
+          const newCategories = rows.map((row) => {
+            const name = row.name || row.Nome || row.NAME;
+            const description = row.description || row.Description || row.Descrição || "";
+            if (!name) throw new Error("A coluna 'name' ou 'Nome' é obrigatória no CSV.");
+            
+            return {
+              name,
+              description,
+              slug: generateSlug(name)
+            };
+          });
+
+          if (newCategories.length === 0) {
+             toast({ title: "Arquivo vazio", variant: "destructive" });
+             setLoading(false);
+             return;
+          }
+
+          const { error } = await supabase.from("categories").insert(newCategories);
+          if (error) throw error;
+          
+          toast({ title: "Sucesso", description: `${newCategories.length} categorias importadas.` });
+          loadCategories();
+        } catch (err: any) {
+          toast({ title: "Erro ao importar", description: err.message, variant: "destructive" });
+        } finally {
+          if (fileInputRef.current) fileInputRef.current.value = "";
+          setLoading(false);
+        }
+      },
+      error: (error) => {
+        toast({ title: "Erro no parse do CSV", description: error.message, variant: "destructive" });
+        setLoading(false);
+      }
+    });
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex items-end justify-between gap-4">
@@ -115,9 +176,21 @@ export default function Categories() {
           <h1 className="text-2xl font-semibold tracking-tight">Categorias</h1>
           <p className="text-sm text-muted-foreground">Organize os seus produtos por coleções ou tipos.</p>
         </div>
-        <Button onClick={() => openDialog()}>
-          <Plus className="mr-2 h-4 w-4" /> Nova Categoria
-        </Button>
+        <div className="flex gap-2">
+          <input 
+            type="file" 
+            accept=".csv" 
+            className="hidden" 
+            ref={fileInputRef}
+            onChange={handleFileUpload} 
+          />
+          <Button variant="outline" onClick={() => fileInputRef.current?.click()} disabled={loading}>
+            <Upload className="mr-2 h-4 w-4" /> Importar CSV
+          </Button>
+          <Button onClick={() => openDialog()} disabled={loading}>
+            <Plus className="mr-2 h-4 w-4" /> Nova Categoria
+          </Button>
+        </div>
       </div>
 
       <Card className="card-elevated">

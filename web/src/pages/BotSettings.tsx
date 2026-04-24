@@ -7,13 +7,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { toast } from "@/hooks/use-toast";
-import { Loader2, Save, Bot, Clock, MapPin } from "lucide-react";
+import { Loader2, Save, Bot, Clock, MapPin, Link as LinkIcon, Eye, EyeOff } from "lucide-react";
 
 export default function BotSettings() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [showToken, setShowToken] = useState(false);
+  const [showVerifyToken, setShowVerifyToken] = useState(false);
   
-  // Estado local mapeado para os campos da interface
   const [settings, setSettings] = useState<any>({
     bot_name: "",
     bot_persona: "",
@@ -21,7 +22,10 @@ export default function BotSettings() {
     office_hours_start: "08:00",
     office_hours_end: "18:00",
     address: "",
-    is_active: true
+    is_active: true,
+    meta_api_token: "",
+    meta_phone_number_id: "",
+    webhook_verify_token: ""
   });
 
   useEffect(() => {
@@ -30,7 +34,6 @@ export default function BotSettings() {
 
   async function loadSettings() {
     setLoading(true);
-    // Carrega da tabela real bot_config (id 1 é o padrão singleton) 
     const { data, error } = await supabase
       .from("bot_config")
       .select("*")
@@ -38,7 +41,6 @@ export default function BotSettings() {
       .single();
 
     if (!error && data) {
-      // Mapeia os nomes das colunas do banco para o estado da UI
       setSettings({
         bot_name: data.attendant_name || "",
         bot_persona: data.persona_prompt || "",
@@ -46,7 +48,10 @@ export default function BotSettings() {
         office_hours_start: data.office_hours_start || "08:00",
         office_hours_end: data.office_hours_end || "18:00",
         address: data.store_address || "",
-        is_active: data.is_active ?? true
+        is_active: data.is_active ?? true,
+        meta_api_token: data.meta_api_token || "",
+        meta_phone_number_id: data.meta_phone_number_id || "",
+        webhook_verify_token: data.webhook_verify_token || ""
       });
     } else if (error) {
       console.error("Erro ao carregar configurações:", error.message);
@@ -57,20 +62,22 @@ export default function BotSettings() {
   async function handleSave() {
     setSaving(true);
     
-    // Atualiza a tabela real bot_config em vez da view settings 
     const { error } = await supabase
       .from("bot_config")
       .update({ 
-        attendant_name: settings.bot_name, // Mapeamento correto
-        persona_prompt: settings.bot_persona, // Mapeamento correto
+        attendant_name: settings.bot_name,
+        persona_prompt: settings.bot_persona,
         welcome_message: settings.welcome_message,
         office_hours_start: settings.office_hours_start,
         office_hours_end: settings.office_hours_end,
-        store_address: settings.address, // Mapeamento correto
+        store_address: settings.address,
         is_active: settings.is_active,
+        meta_api_token: settings.meta_api_token,
+        meta_phone_number_id: settings.meta_phone_number_id,
+        webhook_verify_token: settings.webhook_verify_token,
         updated_at: new Date().toISOString()
       })
-      .eq("id", 1); // Garante que atualiza apenas o registro singleton 
+      .eq("id", 1);
 
     if (error) {
       toast({ title: "Erro ao salvar", description: error.message, variant: "destructive" });
@@ -94,7 +101,7 @@ export default function BotSettings() {
       <div className="flex items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Configurações do Bot</h1>
-          <p className="text-sm text-muted-foreground">Ajuste o comportamento e as informações da sua IA.</p>
+          <p className="text-sm text-muted-foreground">Ajuste o comportamento, conexão e informações da sua IA.</p>
         </div>
         <Button onClick={handleSave} disabled={saving}>
           {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Save className="mr-2 h-4 w-4" />}
@@ -102,12 +109,72 @@ export default function BotSettings() {
         </Button>
       </div>
 
-      <Tabs defaultValue="persona" className="w-full">
-        <TabsList className="grid w-full grid-cols-3 lg:w-[400px]">
+      <Tabs defaultValue="conexao" className="w-full">
+        <TabsList className="grid w-full grid-cols-4 lg:w-[500px]">
+          <TabsTrigger value="conexao">Conexão API</TabsTrigger>
           <TabsTrigger value="persona">Persona</TabsTrigger>
           <TabsTrigger value="horarios">Horários</TabsTrigger>
           <TabsTrigger value="info">Informações</TabsTrigger>
         </TabsList>
+
+        <TabsContent value="conexao" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2"><LinkIcon className="h-5 w-5" /> Conexão com Meta (WhatsApp API)</CardTitle>
+              <CardDescription>Configure as credenciais da API Oficial da Meta. Sem isso o bot não enviará nem receberá mensagens.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">ID do Número de Telefone</label>
+                <Input 
+                  value={settings.meta_phone_number_id}
+                  onChange={(e) => setSettings({...settings, meta_phone_number_id: e.target.value})}
+                  placeholder="Ex: 102345678901234" 
+                />
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Token de Acesso (Permanente)</label>
+                <div className="relative">
+                  <Input 
+                    type={showToken ? "text" : "password"}
+                    value={settings.meta_api_token}
+                    onChange={(e) => setSettings({...settings, meta_api_token: e.target.value})}
+                    placeholder="EAABx..." 
+                  />
+                  <Button 
+                    type="button"
+                    variant="ghost" 
+                    size="icon" 
+                    className="absolute right-0 top-0 h-full px-3"
+                    onClick={() => setShowToken(!showToken)}
+                  >
+                    {showToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </Button>
+                </div>
+              </div>
+              <div className="grid gap-2">
+                <label className="text-sm font-medium">Token de Verificação (Webhook)</label>
+                <div className="relative">
+                  <Input 
+                    type={showVerifyToken ? "text" : "password"}
+                    value={settings.webhook_verify_token}
+                    onChange={(e) => setSettings({...settings, webhook_verify_token: e.target.value})}
+                    placeholder="Crie um token forte e único..." 
+                  />
+                  <Button 
+                    type="button"
+                    variant="ghost" 
+                    size="icon" 
+                    className="absolute right-0 top-0 h-full px-3"
+                    onClick={() => setShowVerifyToken(!showVerifyToken)}
+                  >
+                    {showVerifyToken ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
         <TabsContent value="persona" className="space-y-4">
           <Card>

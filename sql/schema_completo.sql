@@ -1,5 +1,5 @@
 -- =====================================================================
--- SISTEMA DE ATENDIMENTO WHATSAPP - SCHEMA COMPLETO
+-- SISTEMA DE ATENDIMENTO WHATSAPP (LOJA DE AUTOPEÇAS) - SCHEMA COMPLETO
 -- Cole este arquivo no SQL Editor do Supabase e execute uma única vez.
 -- Cria: enums, tabelas, funções, triggers, RLS, Storage bucket e policies.
 -- =====================================================================
@@ -25,7 +25,7 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 
 do $$ begin
-  create type public.intent_type as enum ('compra', 'duvida', 'tamanho', 'localizacao', 'reclamacao', 'saudacao', 'outro');
+  create type public.intent_type as enum ('compra', 'duvida', 'compatibilidade', 'localizacao', 'reclamacao', 'saudacao', 'outro');
 exception when duplicate_object then null; end $$;
 
 do $$ begin
@@ -89,15 +89,20 @@ create table if not exists public.products (
   description text,
   category_id uuid references public.categories(id) on delete set null,
   price numeric(10,2),
-  colors text[] default '{}',
-  sizes text[] default '{}',
+  colors text[] default '{}', -- Utilizado como "Marcas" no front-end de autopeças
+  sizes text[] default '{}',  -- Utilizado como "Compatibilidade" (ex: Celta 2012)
   notes text,
   active boolean default true,
+  search_vector tsvector generated always as (
+    setweight(to_tsvector('portuguese', coalesce(name, '')), 'A') || 
+    setweight(to_tsvector('portuguese', coalesce(description, '')), 'B')
+  ) stored,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
 create index if not exists idx_products_active on public.products(active);
 create index if not exists idx_products_category on public.products(category_id);
+create index if not exists idx_products_search on public.products using GIN (search_vector);
 
 -- ---------- PRODUCT_IMAGES ----------
 create table if not exists public.product_images (
@@ -121,12 +126,12 @@ create table if not exists public.product_collections (
 -- ---------- CUSTOMERS ----------
 create table if not exists public.customers (
   id uuid primary key default gen_random_uuid(),
-  phone text unique not null,            -- JID do WhatsApp (ex: 5511999999999)
+  phone text unique not null,
   name text,
   city text,
   neighborhood text,
-  preferences jsonb default '{}'::jsonb, -- estilo, tamanho preferido
-  tags text[] default '{}',              -- geradas pela IA
+  preferences jsonb default '{}'::jsonb,
+  tags text[] default '{}',
   notes text,
   created_at timestamptz default now(),
   updated_at timestamptz default now()
@@ -141,12 +146,12 @@ create table if not exists public.conversations (
   last_message_at timestamptz,
   last_inbound_at timestamptz,
   last_bot_reply_at timestamptz,
-  recovery_sent_at timestamptz,           -- anti-spam para mensagem de retomada
+  recovery_sent_at timestamptz,
   unread_count int default 0,
   summary text,
   intent public.intent_type,
   tags text[] default '{}',
-  context jsonb default '{}'::jsonb,      -- produto atual, cor, tamanho em discussão
+  context jsonb default '{}'::jsonb,
   created_at timestamptz default now(),
   updated_at timestamptz default now(),
   unique (customer_id)
@@ -162,7 +167,7 @@ create table if not exists public.messages (
   author public.message_author not null,
   text text,
   image_urls text[] default '{}',
-  product_ids uuid[] default '{}',         -- produtos referenciados na mensagem
+  product_ids uuid[] default '{}',
   whatsapp_message_id text,
   created_at timestamptz default now()
 );
@@ -187,9 +192,9 @@ create index if not exists idx_outbound_status on public.outbound_messages(statu
 create table if not exists public.bot_config (
   id int primary key default 1,
   attendant_name text default 'Atendente Virtual',
-  tone text default 'amigavel',           -- formal, amigavel, descontraido
-  persona_prompt text default 'Você é um vendedor virtual amigável de uma loja de roupas física. Sempre oriente o cliente a visitar a loja para experimentar.',
-  welcome_message text default 'Olá! Bem-vindo(a) à nossa loja. Como posso ajudar?',
+  tone text default 'amigavel',
+  persona_prompt text default 'Você é um vendedor virtual amigável de uma loja de autopeças física. Sempre pergunte o chassi, ano e modelo do carro do cliente para checar compatibilidade. Oriente o cliente a visitar a loja ou consultar um mecânico caso tenha dúvida técnica profunda.',
+  welcome_message text default 'Olá! Bem-vindo(a) à nossa loja de autopeças. Como posso ajudar? Qual o modelo e ano do seu veículo?',
   out_of_hours_message text default 'Olá! Estamos fora do horário de atendimento. Voltaremos a responder no próximo horário comercial.',
   recovery_message text default 'Olá! Desculpa, estávamos offline. Como posso ajudar?',
   store_address text,
@@ -222,28 +227,27 @@ create table if not exists public.faqs (
 -- ---------- BUSINESS_HOURS ----------
 create table if not exists public.business_hours (
   id uuid primary key default gen_random_uuid(),
-  day_of_week int not null check (day_of_week between 0 and 6),  -- 0=domingo
+  day_of_week int not null check (day_of_week between 0 and 6),
   open_time time,
   close_time time,
   closed boolean default false,
   unique (day_of_week)
 );
--- Seeds (segunda a sábado 9-18, domingo fechado)
 insert into public.business_hours (day_of_week, open_time, close_time, closed) values
   (0, null, null, true),
-  (1, '09:00', '18:00', false),
-  (2, '09:00', '18:00', false),
-  (3, '09:00', '18:00', false),
-  (4, '09:00', '18:00', false),
-  (5, '09:00', '18:00', false),
-  (6, '09:00', '14:00', false)
+  (1, '08:00', '18:00', false),
+  (2, '08:00', '18:00', false),
+  (3, '08:00', '18:00', false),
+  (4, '08:00', '18:00', false),
+  (5, '08:00', '18:00', false),
+  (6, '08:00', '12:00', false)
 on conflict (day_of_week) do nothing;
 
 -- ---------- BOT_STATUS (singleton) ----------
 create table if not exists public.bot_status (
   id int primary key default 1,
   connection_status public.bot_connection_status default 'disconnected',
-  qr_code text,                           -- QR atual quando pendente (data url ou string)
+  qr_code text,
   last_heartbeat timestamptz,
   whatsapp_number text,
   messages_sent_today int default 0,
@@ -257,8 +261,8 @@ insert into public.bot_status (id) values (1) on conflict (id) do nothing;
 -- ---------- LOGS ----------
 create table if not exists public.logs (
   id uuid primary key default gen_random_uuid(),
-  level text not null,                    -- info, warn, error
-  source text,                            -- bot, panel, edge-function
+  level text not null,
+  source text,
   message text not null,
   meta jsonb,
   created_at timestamptz default now()
@@ -303,3 +307,110 @@ drop trigger if exists on_auth_user_created on auth.users;
 create trigger on_auth_user_created
 after insert on auth.users
 for each row execute function public.handle_new_user();
+
+-- =====================================================================
+-- ROW LEVEL SECURITY (RLS)
+-- =====================================================================
+
+alter table public.profiles            enable row level security;
+alter table public.user_roles          enable row level security;
+alter table public.categories          enable row level security;
+alter table public.collections         enable row level security;
+alter table public.products            enable row level security;
+alter table public.product_images      enable row level security;
+alter table public.product_collections enable row level security;
+alter table public.customers           enable row level security;
+alter table public.conversations       enable row level security;
+alter table public.messages            enable row level security;
+alter table public.outbound_messages   enable row level security;
+alter table public.bot_config          enable row level security;
+alter table public.faqs                enable row level security;
+alter table public.business_hours      enable row level security;
+alter table public.bot_status          enable row level security;
+alter table public.logs                enable row level security;
+
+drop policy if exists "profile self read"   on public.profiles;
+drop policy if exists "profile self update" on public.profiles;
+create policy "profile self read"   on public.profiles for select using (auth.uid() = id);
+create policy "profile self update" on public.profiles for update using (auth.uid() = id);
+
+drop policy if exists "roles self read"  on public.user_roles;
+drop policy if exists "roles admin all"  on public.user_roles;
+create policy "roles self read" on public.user_roles for select using (auth.uid() = user_id);
+create policy "roles admin all" on public.user_roles for all
+  using (public.has_role(auth.uid(), 'admin'))
+  with check (public.has_role(auth.uid(), 'admin'));
+
+drop policy if exists "categories admin all" on public.categories;
+create policy "categories admin all" on public.categories for all
+  using (public.has_role(auth.uid(), 'admin')) with check (public.has_role(auth.uid(), 'admin'));
+
+drop policy if exists "collections admin all" on public.collections;
+create policy "collections admin all" on public.collections for all
+  using (public.has_role(auth.uid(), 'admin')) with check (public.has_role(auth.uid(), 'admin'));
+
+drop policy if exists "products admin all" on public.products;
+create policy "products admin all" on public.products for all
+  using (public.has_role(auth.uid(), 'admin')) with check (public.has_role(auth.uid(), 'admin'));
+
+drop policy if exists "product_images admin all" on public.product_images;
+create policy "product_images admin all" on public.product_images for all
+  using (public.has_role(auth.uid(), 'admin')) with check (public.has_role(auth.uid(), 'admin'));
+
+drop policy if exists "product_collections admin all" on public.product_collections;
+create policy "product_collections admin all" on public.product_collections for all
+  using (public.has_role(auth.uid(), 'admin')) with check (public.has_role(auth.uid(), 'admin'));
+
+drop policy if exists "customers admin all" on public.customers;
+create policy "customers admin all" on public.customers for all
+  using (public.has_role(auth.uid(), 'admin')) with check (public.has_role(auth.uid(), 'admin'));
+
+drop policy if exists "conversations admin all" on public.conversations;
+create policy "conversations admin all" on public.conversations for all
+  using (public.has_role(auth.uid(), 'admin')) with check (public.has_role(auth.uid(), 'admin'));
+
+drop policy if exists "messages admin all" on public.messages;
+create policy "messages admin all" on public.messages for all
+  using (public.has_role(auth.uid(), 'admin')) with check (public.has_role(auth.uid(), 'admin'));
+
+drop policy if exists "outbound admin all" on public.outbound_messages;
+create policy "outbound admin all" on public.outbound_messages for all
+  using (public.has_role(auth.uid(), 'admin')) with check (public.has_role(auth.uid(), 'admin'));
+
+drop policy if exists "bot_config admin all" on public.bot_config;
+create policy "bot_config admin all" on public.bot_config for all
+  using (public.has_role(auth.uid(), 'admin')) with check (public.has_role(auth.uid(), 'admin'));
+
+drop policy if exists "faqs admin all" on public.faqs;
+create policy "faqs admin all" on public.faqs for all
+  using (public.has_role(auth.uid(), 'admin')) with check (public.has_role(auth.uid(), 'admin'));
+
+drop policy if exists "business_hours admin all" on public.business_hours;
+create policy "business_hours admin all" on public.business_hours for all
+  using (public.has_role(auth.uid(), 'admin')) with check (public.has_role(auth.uid(), 'admin'));
+
+drop policy if exists "bot_status admin read"  on public.bot_status;
+create policy "bot_status admin read" on public.bot_status for select
+  using (public.has_role(auth.uid(), 'admin'));
+
+drop policy if exists "logs admin read" on public.logs;
+create policy "logs admin read" on public.logs for select
+  using (public.has_role(auth.uid(), 'admin'));
+
+-- =====================================================================
+-- STORAGE
+-- =====================================================================
+
+insert into storage.buckets (id, name, public)
+values ('product-images', 'product-images', true)
+on conflict (id) do nothing;
+
+drop policy if exists "product images public read"     on storage.objects;
+drop policy if exists "product images admin insert"    on storage.objects;
+drop policy if exists "product images admin update"    on storage.objects;
+drop policy if exists "product images admin delete"    on storage.objects;
+
+create policy "product images public read" on storage.objects for select using (bucket_id = 'product-images');
+create policy "product images admin insert" on storage.objects for insert with check (bucket_id = 'product-images' and public.has_role(auth.uid(), 'admin'));
+create policy "product images admin update" on storage.objects for update using (bucket_id = 'product-images' and public.has_role(auth.uid(), 'admin'));
+create policy "product images admin delete" on storage.objects for delete using (bucket_id = 'product-images' and public.has_role(auth.uid(), 'admin'));

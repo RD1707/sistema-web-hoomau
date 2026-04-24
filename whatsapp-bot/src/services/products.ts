@@ -5,25 +5,30 @@ export type ProductRow = {
   name: string;
   description: string | null;
   price: number | null;
-  colors: string[];
-  sizes: string[];
+  colors: string[]; // Utilizado como Marcas
+  sizes: string[];  // Utilizado como Compatibilidade
   notes: string | null;
   category_id: string | null;
 };
 
 export type ProductWithImages = ProductRow & { images: string[] };
 
-// Busca produtos ativos contendo qualquer palavra-chave do texto do cliente.
+// Busca produtos ativos usando Full-Text Search (tsvector)
 export async function searchProducts(query: string, limit = 5): Promise<ProductWithImages[]> {
   const terms = query.toLowerCase().split(/\s+/).filter((t) => t.length > 2);
   if (!terms.length) return [];
 
-  // Filtro simples por ILIKE no nome ou descrição
-  let qb = supabase.from("products").select("*").eq("active", true).limit(limit);
-  for (const t of terms.slice(0, 4)) {
-    qb = qb.or(`name.ilike.%${t}%,description.ilike.%${t}%`);
-  }
-  const { data: products, error } = await qb;
+  // Formata os termos para o formato do websearch_to_tsquery ou phraseto_tsquery
+  // Unimos os termos com & (AND) lógico para o tsquery
+  const searchQuery = terms.join(" | ");
+
+  const { data: products, error } = await supabase
+    .from("products")
+    .select("*")
+    .eq("active", true)
+    .textSearch("search_vector", searchQuery)
+    .limit(limit);
+
   if (error || !products?.length) return [];
 
   const ids = products.map((p) => p.id);

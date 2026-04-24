@@ -1,32 +1,96 @@
-import "dotenv/config";
-import { startBaileys } from "./whatsapp/baileys-client";
-import { startOutboundQueue } from "./core/outbound-queue";
-import { startHeartbeat } from "./core/heartbeat";
-import { runOfflineRecovery } from "./core/offline-recovery";
+import express from "express";
+import cors from "cors";
 import { logger } from "./utils/logger";
+import { supabase } from "./supabase/client";
+import { handleIncomingMessage } from "./core/message-handler";
+import { startHeartbeat } from "./core/heartbeat";
+import { startOutboundQueue } from "./core/outbound-queue";
+import { runOfflineRecovery } from "./core/offline-recovery";
 
-async function main() {
-  logger.info("Iniciando bot WhatsApp da loja...");
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-  // Conecta no WhatsApp (QR via terminal + salvo em bot_status.qr_code)
-  await startBaileys();
+const PORT = process.env.PORT || 3001;
 
-  // Heartbeat a cada 30s para o painel saber que está online
+// Validação de ambiente e conexão (Fail-fast na inicialização)
+async function bootstrap() {
+  if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
+    logger.fatal("Variáveis de ambiente do Supabase não configuradas.");
+    process.exit(1);
+  }
+
+  try {
+    const { error } = await supabase.from("bot_config").select("id").limit(1);
+    if (error) throw error;
+    logger.info("Conexão com o banco de dados (Supabase) estabelecida.");
+  } catch (err: any) {
+    logger.fatal({ err }, "Falha ao conectar no banco de dados durante a inicialização.");
+    process.exit(1);
+  }
+
+  // Iniciar serviços em background
   startHeartbeat();
-
-  // Fila de envios manuais (o dono envia pelo painel -> bot envia no WhatsApp)
   startOutboundQueue();
+  runOfflineRecovery();
 
-  // Retomada após ficar offline: manda mensagem configurada uma única vez por conversa
-  await runOfflineRecovery();
-
-  logger.info("Bot pronto.");
+  app.listen(PORT, () => {
+    logger.info(`Servidor Webhook rodando na porta ${PORT}`);
+  });
 }
 
-process.on("unhandledRejection", (e) => logger.error({ err: e }, "unhandledRejection"));
-process.on("uncaughtException",  (e) => logger.error({ err: e }, "uncaughtException"));
+// Endpoint de Verificação da Meta
+app.get("/webhook", async (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
 
-main().catch((err) => {
-  logger.error({ err }, "Falha no bootstrap");
-  process.exit(1);
+  if (mode === "subscribe" && token) {
+    try {
+      const { data, error } = await supabase.from("bot_config").select("webhook_verify_token").eq("id", 1).single();
+      if (error) throw error;
+
+      if (data?.webhook_verify_token === token) {
+        logger.info("Webhook verificado com sucesso pela Meta!");
+        res.status(200).send(challenge);
+      } else {
+        logger.warn("Token de verificação inválido.");
+        res.sendStatus(403);
+      }
+    } catch (err) {
+      logger.error({ err }, "Erro ao consultar token de verificação.");
+      res.sendStatus(500);
+    }
+  } else {
+    res.sendStatus(400);
+  }
 });
+
+// Endpoint de Recebimento de Mensagens da Meta
+app.post("/webhook", (req, res) => {
+  const body = req.body;
+  if (body.object) {
+    if (
+      body.entry && 
+      body.entry[0].changes && 
+      body.entry[0].changes[0] && 
+      body.entry[0].changes[0].value.messages && 
+      body.entry[0].changes[0].value.messages[0]
+    ) {
+      const msg = body.entry[0].changes[0].value.messages[0];
+      const contact = body.entry[0].changes[0].value.contacts?.[0];
+      const phoneId = body.entry[0].changes[0].value.metadata.phone_number_id;
+      
+      // Processa a mensagem em background para não travar o webhook
+      handleIncomingMessage(msg, contact, phoneId).catch(err => {
+        logger.error({ err, msgId: msg.id }, "Erro não tratado no processamento da mensagem.");
+      });
+    }
+    // Sempre responde 200 OK para a Meta imediatamente
+    res.sendStatus(200);
+  } else {
+    res.sendStatus(404);
+  }
+});
+
+bootstrap();

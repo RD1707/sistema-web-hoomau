@@ -1,6 +1,6 @@
 import { supabase } from "../supabase/client";
 import { logger, persistLog } from "../utils/logger";
-import { getSocket } from "../whatsapp/baileys-client";
+import { sendText, sendImage } from "../whatsapp/meta-api-client";
 import { appendMessage } from "../services/conversations";
 
 const POLL_MS = Number(process.env.OUTBOUND_POLL_MS || 3000);
@@ -12,6 +12,9 @@ export function startOutboundQueue() {
 
 async function processOnce() {
   try {
+    const { data: cfg } = await supabase.from("bot_config").select("meta_phone_number_id, is_active").eq("id", 1).single();
+    if (!cfg?.is_active || !cfg?.meta_phone_number_id) return;
+
     const { data, error } = await supabase
       .from("outbound_messages")
       .select("id, conversation_id, text, image_urls, attempts, conversations(customer_id, customers(phone))")
@@ -29,12 +32,13 @@ async function processOnce() {
         await markFailed(row.id, "Telefone não encontrado", row.attempts);
         continue;
       }
-      const jid = `${phone}@s.whatsapp.net`;
+      
       try {
-        if (row.text) await getSocket().sendMessage(jid, { text: row.text });
+        if (row.text) await sendText(cfg.meta_phone_number_id, phone, row.text);
         for (const url of row.image_urls ?? []) {
-          await getSocket().sendMessage(jid, { image: { url } });
+          await sendImage(cfg.meta_phone_number_id, phone, url);
         }
+        
         await supabase.from("outbound_messages").update({
           status: "sent", sent_at: new Date().toISOString(), attempts: row.attempts + 1
         }).eq("id", row.id);

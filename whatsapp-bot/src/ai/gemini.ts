@@ -3,7 +3,7 @@ import { supabase } from "../supabase/client";
 import { searchProducts } from "../services/products";
 import { buildSystemPrompt } from "./prompt-builder";
 
-const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
 
 type ReplyResult = {
   text: string;
@@ -58,7 +58,8 @@ export async function generateBotReply(args: {
       text: parsed.text || "Desculpe, não consegui entender. Pode repetir?",
       productIds: Array.isArray(parsed.product_ids) ? parsed.product_ids : [],
       imageUrls: Array.isArray(parsed.image_urls) ? parsed.image_urls : [],
-      contextPatch: parsed.context && typeof parsed.context === "object" ? parsed.context : undefined
+      contextPatch: parsed.context && typeof parsed.context === "object" ? parsed.context : undefined,
+      detectedIntent: typeof parsed.intent === "string" ? parsed.intent : "outro"
     };
   } catch (err) {
     logger.error({ err }, "Gemini falhou");
@@ -70,5 +71,5 @@ function safeJson(s: string) {
   try { return JSON.parse(s); } catch { return {}; }
 }
 function fallback(text: string): ReplyResult {
-  return { text, productIds: [], imageUrls: [] };
+  return { text, productIds: [], imageUrls: [], detectedIntent: "outro" };
 }
